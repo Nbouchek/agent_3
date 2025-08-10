@@ -155,7 +155,7 @@ def read_root():
     Returns:
         dict: Hello message.
     """
-    return {"Hello": "World", "version": "1.1.0"}
+    return {"Hello": "World", "version": "1.2.0"}
 
 @app.get("/debug")
 def debug_info():
