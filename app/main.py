@@ -8,6 +8,42 @@ from datetime import datetime
 
 app = FastAPI(title="Communication App API", version="1.0.0")
 
+def ensure_db_schema():
+    """Best-effort schema guard for production DB.
+
+    Adds missing columns on existing tables that predate current models.
+    Safe, no-op if columns already exist.
+    """
+    try:
+        engine = get_engine()
+        with engine.begin() as conn:
+            # Check existing columns on "user" table
+            result = conn.exec_driver_sql(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'user'
+                """
+            )
+            existing = {row[0] for row in result}
+
+            if "created_at" not in existing:
+                conn.exec_driver_sql(
+                    'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()'
+                )
+            if "is_active" not in existing:
+                conn.exec_driver_sql(
+                    'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE'
+                )
+            if "last_seen" not in existing:
+                conn.exec_driver_sql(
+                    'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP WITHOUT TIME ZONE'
+                )
+
+    except Exception as e:
+        # Non-fatal; app continues and health/debug will show issues
+        print(f"Schema guard failed: {e}")
+
 # Determine allowed origins based on environment
 def get_allowed_origins():
     """Get allowed origins based on environment."""
@@ -151,6 +187,9 @@ def on_startup():
         except Exception as db_error:
             print(f"Database initialization failed: {db_error}")
             print("App will continue without database initialization")
+
+        # Best-effort non-destructive schema guard for existing DBs
+        ensure_db_schema()
 
     except Exception as e:
         print(f"Startup error: {e}")
