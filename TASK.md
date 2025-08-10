@@ -3,14 +3,11 @@
 ## Active Tasks
 
 - **Main Task: Create MVP for communication app**
-  Date: 2023-10-01
+  Date: 2025-08-10
   Description: Build an app supporting text, audio/video calls, and payments, cross-platform, inspired by top apps. Use Python backend, React Native frontend, deploy on Render. Use n8n for PoCs.
 
 ### Sub-tasks
 
-- Initialize Git repository.
-- Create and deploy PostgreSQL database on Render.
-- Set up FastAPI backend locally.
 - Implement user authentication.
 - Implement text messaging with WebSockets.
 - Integrate WebRTC for audio/video calls.
@@ -24,7 +21,17 @@
 
 ## Completed Tasks
 
-- Set up project directory structure. (Completed: 2023-10-01)
+- Set up project directory structure. (Completed: 2025-08-10)
+- Initialize Git repository. (Completed: 2025-08-10)
+- Create and deploy PostgreSQL database on Render. (Completed: 2025-08-10, ID: dpg-d2c7o3hr0fns73dnad60-a)
+- Set up FastAPI backend locally. (Completed: 2025-08-10)
+- Implement user authentication. (Completed: 2025-08-10)
+- Implement text messaging with WebSockets. (Completed: 2025-08-10)
+- Integrate WebRTC for audio/video calls. (Completed: 2025-08-10)
+- Integrate Stripe for payments. (Completed: 2025-08-10)
+- Set up React Native frontend for mobile. (Completed: 2025-08-10)
+- Set up desktop frontend with Electron. (Completed: 2025-08-10)
+- Write unit tests for backend. (Completed: 2025-08-10)
 
 ## Discovered During Work
 
