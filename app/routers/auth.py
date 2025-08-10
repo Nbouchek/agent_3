@@ -4,9 +4,9 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 from sqlmodel import Session, select
 
-from app.models import User
+from models import User
 
-from app.database import get_db
+from database import get_db
 
 from passlib.context import CryptContext
 

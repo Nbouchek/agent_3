@@ -6,18 +6,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# On Render, DATABASE_URL must be provided via environment
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable is required")
+def get_database_url():
+    """Get database URL from environment variables."""
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable is required")
+    return database_url
 
-engine = create_engine(DATABASE_URL)
+def get_engine():
+    """Get database engine, creating it if necessary."""
+    if not hasattr(get_engine, '_engine'):
+        database_url = get_database_url()
+        get_engine._engine = create_engine(database_url)
+    return get_engine._engine
 
 def get_db():
-    db = Session(engine)
+    """Get database session."""
+    db = Session(get_engine())
     try:
         yield db
     finally:
         db.close()
 
-# To create tables, call SQLModel.metadata.create_all(engine) in main
+# To create tables, call SQLModel.metadata.create_all(get_engine()) in main
