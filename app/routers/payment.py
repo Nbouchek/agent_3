@@ -101,6 +101,13 @@ async def create_payment_intent(
             # In production, integrate Stripe Connect for true P2P
         )
 
+        # Debug: Check if intent and client_secret exist
+        if not intent:
+            raise HTTPException(status_code=500, detail="Payment intent creation returned None")
+        
+        if not hasattr(intent, 'client_secret') or not intent.client_secret:
+            raise HTTPException(status_code=500, detail=f"Payment intent missing client_secret. Intent: {intent}")
+
         return PaymentResponse(
             client_secret=intent.client_secret,
             payment_intent_id=intent.id,
@@ -108,8 +115,8 @@ async def create_payment_intent(
             recipient_id=request.recipient_id
         )
 
-    except stripe.error.StripeError:
-        raise HTTPException(status_code=500, detail="Stripe API key not configured")
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=500, detail=f"Stripe error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Payment creation failed: {str(e)}")
 
