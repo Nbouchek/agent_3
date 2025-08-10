@@ -70,20 +70,24 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     Returns:
         User: Created user.
     """
-    existing_user = db.exec(select(User).where(User.username == user.username)).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    
-    # Create new user with hashed password
-    db_user = User(
-        username=user.username,
-        email=user.email,
-        hashed_password=get_password_hash(user.password)
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
+    try:
+        existing_user = db.exec(select(User).where(User.username == user.username)).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Username already registered")
+        
+        # Create new user with hashed password
+        db_user = User(
+            username=user.username,
+            email=user.email,
+            hashed_password=get_password_hash(user.password)
+        )
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        return db_user
+    except Exception as e:
+        print(f"Registration error: {e}")
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
 @router.post("/token", response_model=Token)
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):

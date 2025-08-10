@@ -9,8 +9,7 @@ load_dotenv()
 # On Render, DATABASE_URL must be provided via environment
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    # Default to local only for development
-    DATABASE_URL = "postgresql://localhost/db"
+    raise ValueError("DATABASE_URL environment variable is required")
 
 engine = create_engine(DATABASE_URL)
 

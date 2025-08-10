@@ -15,7 +15,12 @@ app.include_router(payment.router)
 
 @app.on_event("startup")
 def on_startup():
-    SQLModel.metadata.create_all(engine)
+    try:
+        SQLModel.metadata.create_all(engine)
+        print("Database tables created successfully")
+    except Exception as e:
+        print(f"Error creating database tables: {e}")
+        raise e
 
 @app.get("/")
 def read_root():
