@@ -155,7 +155,7 @@ def read_root():
     Returns:
         dict: Hello message.
     """
-    return {"Hello": "World"}
+    return {"Hello": "World", "version": "1.1.0"}
 
 @app.get("/debug")
 def debug_info():
@@ -166,7 +166,7 @@ def debug_info():
         dict: Debug information.
     """
     stripe_key = os.getenv("STRIPE_API_KEY", "")
-    
+
     return {
         "database_url_set": bool(os.getenv("DATABASE_URL")),
         "secret_key_set": bool(os.getenv("SECRET_KEY")),
