@@ -31,3 +31,19 @@ def read_root():
         dict: Greeting message.
     """
     return {"Hello": "World"}
+
+@app.get("/debug")
+def debug_info():
+    """
+    Debug endpoint to check environment variables.
+    
+    Returns:
+        dict: Debug information.
+    """
+    import os
+    return {
+        "database_url_set": bool(os.getenv("DATABASE_URL")),
+        "secret_key_set": bool(os.getenv("SECRET_KEY")),
+        "stripe_key_set": bool(os.getenv("STRIPE_API_KEY")),
+        "database_url_length": len(os.getenv("DATABASE_URL", "")) if os.getenv("DATABASE_URL") else 0
+    }

@@ -74,7 +74,7 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         existing_user = db.exec(select(User).where(User.username == user.username)).first()
         if existing_user:
             raise HTTPException(status_code=400, detail="Username already registered")
-        
+
         # Create new user with hashed password
         db_user = User(
             username=user.username,
