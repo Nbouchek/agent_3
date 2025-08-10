@@ -102,7 +102,8 @@ def health_check():
         # Try to connect to database
         engine = get_engine()
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
+            # SQLAlchemy 2.x requires text or exec_driver_sql for raw strings
+            conn.exec_driver_sql("SELECT 1")
         return {
             "status": "healthy",
             "database": "connected",
