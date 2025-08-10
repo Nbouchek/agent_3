@@ -12,8 +12,18 @@ class User(SQLModel, table=True):
     last_seen: Optional[datetime] = Field(default=None)
 
     # Relationships
-    sent_messages: List["Message"] = Relationship(back_populates="sender", sa_relationship_kwargs={"foreign_keys": "Message.sender_id"})
-    received_messages: List["Message"] = Relationship(back_populates="receiver", sa_relationship_kwargs={"foreign_keys": "Message.receiver_id"})
+    sent_messages: List["Message"] = Relationship(
+        back_populates="sender",
+        sa_relationship_kwargs={
+            "foreign_keys": "[Message.sender_id]"
+        },
+    )
+    received_messages: List["Message"] = Relationship(
+        back_populates="receiver",
+        sa_relationship_kwargs={
+            "foreign_keys": "[Message.receiver_id]"
+        },
+    )
 
 class Message(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -25,8 +35,20 @@ class Message(SQLModel, table=True):
     message_type: str = Field(default="text")  # text, image, file, etc.
 
     # Relationships
-    sender: User = Relationship(back_populates="sent_messages")
-    receiver: User = Relationship(back_populates="received_messages")
+    sender: User = Relationship(
+        back_populates="sent_messages",
+        sa_relationship_kwargs={
+            "foreign_keys": "[Message.sender_id]",
+            "primaryjoin": "Message.sender_id==User.id",
+        },
+    )
+    receiver: User = Relationship(
+        back_populates="received_messages",
+        sa_relationship_kwargs={
+            "foreign_keys": "[Message.receiver_id]",
+            "primaryjoin": "Message.receiver_id==User.id",
+        },
+    )
 
 class Call(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -39,8 +61,18 @@ class Call(SQLModel, table=True):
     duration_seconds: Optional[int] = Field(default=None)
 
     # Relationships
-    caller: User = Relationship(sa_relationship_kwargs={"foreign_keys": "user.id"})
-    callee: User = Relationship(sa_relationship_kwargs={"foreign_keys": "user.id"})
+    caller: User = Relationship(
+        sa_relationship_kwargs={
+            "foreign_keys": "[Call.caller_id]",
+            "primaryjoin": "Call.caller_id==User.id",
+        }
+    )
+    callee: User = Relationship(
+        sa_relationship_kwargs={
+            "foreign_keys": "[Call.callee_id]",
+            "primaryjoin": "Call.callee_id==User.id",
+        }
+    )
 
 class Payment(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -55,8 +87,18 @@ class Payment(SQLModel, table=True):
     completed_at: Optional[datetime] = Field(default=None)
 
     # Relationships
-    sender: User = Relationship(sa_relationship_kwargs={"foreign_keys": "user.id"})
-    recipient: User = Relationship(sa_relationship_kwargs={"foreign_keys": "user.id"})
+    sender: User = Relationship(
+        sa_relationship_kwargs={
+            "foreign_keys": "[Payment.sender_id]",
+            "primaryjoin": "Payment.sender_id==User.id",
+        }
+    )
+    recipient: User = Relationship(
+        sa_relationship_kwargs={
+            "foreign_keys": "[Payment.recipient_id]",
+            "primaryjoin": "Payment.recipient_id==User.id",
+        }
+    )
 
 class UserSession(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
