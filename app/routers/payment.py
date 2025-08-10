@@ -1,3 +1,4 @@
+import os
 import stripe
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,9 +11,8 @@ from app.models import User
 
 router = APIRouter(prefix="/payment", tags=["payment"])
 
-# Set stripe.api_key from env in config
-
-stripe.api_key = "sk_test_yourkey"  # placeholder, set in .env
+# Load Stripe API key from environment
+stripe.api_key = os.getenv("STRIPE_API_KEY", "")
 
 class PaymentRequest(BaseModel):
     amount: int
@@ -33,6 +33,9 @@ def create_payment_intent(
     Returns:
         dict: Client secret for payment.
     """
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="Stripe API key not configured")
+
     try:
         # For MVP, create intent for app
         intent = stripe.PaymentIntent.create(
