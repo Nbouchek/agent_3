@@ -2,9 +2,9 @@ from fastapi import APIRouter, WebSocket, Depends, HTTPException, status
 from starlette.websockets import WebSocketDisconnect
 from typing import Dict, Optional
 from sqlmodel import Session, select
-from database import get_db
-from models import User
-from routers.auth import get_current_user
+from app.database import get_db
+from app.models import User
+from app.routers.auth import get_current_user
 from pydantic import BaseModel
 import json
 

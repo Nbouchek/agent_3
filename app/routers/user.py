@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
-from database import get_db
-from models import User
-from routers.auth import get_current_user
+from app.database import get_db
+from app.models import User
+from app.routers.auth import get_current_user
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime

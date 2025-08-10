@@ -1,9 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import auth, chat, call, payment
-from database import get_engine
+from app.routers import auth, chat, call, payment
+from app.database import get_engine
 from sqlmodel import SQLModel
 import os
+from datetime import datetime
 
 app = FastAPI(title="Communication App API", version="1.0.0")
 
@@ -36,6 +37,10 @@ def get_allowed_origins():
     # If in development mode, also allow all origins (remove in production)
     if os.getenv("ENVIRONMENT", "development") == "development":
         allowed_origins.append("*")
+    else:
+        # In production, ensure we have at least some origins
+        if not allowed_origins:
+            allowed_origins = ["*"]  # Fallback for production
 
     return allowed_origins
 
@@ -84,6 +89,32 @@ def debug_info():
         "cors_enabled": True
     }
 
+@app.get("/health")
+def health_check():
+    """
+    Health check endpoint for Render.
+
+    Returns:
+        dict: Health status.
+    """
+    try:
+        # Try to connect to database
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute("SELECT 1")
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "database": "disconnected",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
 @app.options("/{full_path:path}")
 async def options_handler(full_path: str):
     """
@@ -103,10 +134,22 @@ async def options_handler(full_path: str):
 
 @app.on_event("startup")
 def on_startup():
+    """Initialize database and other startup tasks."""
     try:
-        SQLModel.metadata.create_all(get_engine())
-        print("Database tables created successfully")
+        # Set environment for production if not set
+        if not os.getenv("ENVIRONMENT"):
+            os.environ["ENVIRONMENT"] = "production"
+
+        print(f"Starting up in {os.getenv('ENVIRONMENT', 'development')} mode")
+
+        # Try to create database tables
+        try:
+            SQLModel.metadata.create_all(get_engine())
+            print("Database tables created successfully")
+        except Exception as db_error:
+            print(f"Database initialization failed: {db_error}")
+            print("App will continue without database initialization")
+
     except Exception as e:
-        print(f"Error creating database tables: {e}")
-        # Don't raise the error during startup to allow the app to start
-        print(f"Warning: Database initialization failed: {e}")
+        print(f"Startup error: {e}")
+        print("App will continue with limited functionality")

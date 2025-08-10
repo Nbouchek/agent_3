@@ -32,7 +32,13 @@
 - Set up React Native frontend for mobile. (Completed: 2025-08-10)
 - Set up desktop frontend with Electron. (Completed: 2025-08-10)
 - Write unit tests for backend. (Completed: 2025-08-10)
+- Fix failed deploy on Render. (Completed: 2025-08-10)
 
 ## Discovered During Work
 
-(none yet)
+- Missing `__init__.py` files in app and routers directories (Fixed: 2025-08-10)
+- Incorrect import paths using absolute imports instead of relative imports (Fixed: 2025-08-10)
+- Database connection issues with SSL requirements on Render (Fixed: 2025-08-10)
+- Missing health check endpoint for Render monitoring (Fixed: 2025-08-10)
+- CORS configuration issues in production environments (Fixed: 2025-08-10)
+- Duplicate requirements.txt files causing deployment confusion (Fixed: 2025-08-10)

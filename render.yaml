@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: comm-app-backend
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r app/requirements.txt
+    startCommand: python start.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.16
+      - key: ENVIRONMENT
+        value: production
+    healthCheckPath: /health
+    autoDeploy: true
