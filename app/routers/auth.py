@@ -18,9 +18,11 @@ from pydantic import BaseModel
 
 from typing import Optional
 
+import os
+
 # Settings - move to config later
 
-SECRET_KEY = "your-secret-key-change-me"
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-me")
 
 ALGORITHM = "HS256"
 
@@ -31,6 +33,11 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
 
 class Token(BaseModel):
     access_token: str
@@ -53,12 +60,12 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return encoded_jwt
 
 @router.post("/register", response_model=User)
-def register(user: User, db: Session = Depends(get_db)):
+def register(user: UserCreate, db: Session = Depends(get_db)):
     """
     Register a new user.
 
     Args:
-        user (User): User data.
+        user (UserCreate): User data.
 
     Returns:
         User: Created user.
@@ -66,11 +73,17 @@ def register(user: User, db: Session = Depends(get_db)):
     existing_user = db.exec(select(User).where(User.username == user.username)).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Username already registered")
-    user.hashed_password = get_password_hash(user.hashed_password)  # Assuming plain password is sent
-    db.add(user)
+    
+    # Create new user with hashed password
+    db_user = User(
+        username=user.username,
+        email=user.email,
+        hashed_password=get_password_hash(user.password)
+    )
+    db.add(db_user)
     db.commit()
-    db.refresh(user)
-    return user
+    db.refresh(db_user)
+    return db_user
 
 @router.post("/token", response_model=Token)
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
