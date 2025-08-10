@@ -40,6 +40,41 @@ def ensure_db_schema():
                     'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP WITHOUT TIME ZONE'
                 )
 
+            # Check and backfill columns for "message" table
+            result = conn.exec_driver_sql(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'message'
+                """
+            )
+            msg_existing = {row[0] for row in result}
+
+            if "content" not in msg_existing:
+                conn.exec_driver_sql(
+                    'ALTER TABLE "message" ADD COLUMN IF NOT EXISTS content TEXT'
+                )
+            if "sender_id" not in msg_existing:
+                conn.exec_driver_sql(
+                    'ALTER TABLE "message" ADD COLUMN IF NOT EXISTS sender_id INTEGER'
+                )
+            if "receiver_id" not in msg_existing:
+                conn.exec_driver_sql(
+                    'ALTER TABLE "message" ADD COLUMN IF NOT EXISTS receiver_id INTEGER'
+                )
+            if "timestamp" not in msg_existing:
+                conn.exec_driver_sql(
+                    'ALTER TABLE "message" ADD COLUMN IF NOT EXISTS timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()'
+                )
+            if "is_read" not in msg_existing:
+                conn.exec_driver_sql(
+                    'ALTER TABLE "message" ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE'
+                )
+            if "message_type" not in msg_existing:
+                conn.exec_driver_sql(
+                    'ALTER TABLE "message" ADD COLUMN IF NOT EXISTS message_type VARCHAR(50) DEFAULT \"text\"'
+                )
+
     except Exception as e:
         # Non-fatal; app continues and health/debug will show issues
         print(f"Schema guard failed: {e}")
