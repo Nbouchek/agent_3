@@ -60,7 +60,11 @@ async def create_payment_intent(
     Returns:
         PaymentResponse: Payment intent details
     """
-    _require_valid_stripe_key()
+    # Set Stripe API key for this request
+    api_key = os.getenv("STRIPE_API_KEY", "")
+    if not api_key or not api_key.startswith("sk_"):
+        raise HTTPException(status_code=500, detail="Stripe API key not configured")
+    stripe.api_key = api_key
 
     # Validate amount
     if request.amount <= 0:
@@ -179,7 +183,11 @@ async def get_transaction_history(
     Returns:
         List[TransactionHistory]: List of transactions
     """
-    _require_valid_stripe_key()
+    # Set Stripe API key for this request
+    api_key = os.getenv("STRIPE_API_KEY", "")
+    if not api_key or not api_key.startswith("sk_"):
+        raise HTTPException(status_code=500, detail="Stripe API key not configured")
+    stripe.api_key = api_key
 
     try:
         # Get payments sent by the user
@@ -226,7 +234,11 @@ async def get_user_balance(current_user: User = Depends(get_current_user)):
     Returns:
         dict: User's payment statistics
     """
-    _require_valid_stripe_key()
+    # Set Stripe API key for this request
+    api_key = os.getenv("STRIPE_API_KEY", "")
+    if not api_key or not api_key.startswith("sk_"):
+        raise HTTPException(status_code=500, detail="Stripe API key not configured")
+    stripe.api_key = api_key
 
     try:
         # Get total amount sent
