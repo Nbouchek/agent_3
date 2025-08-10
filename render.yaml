@@ -3,7 +3,7 @@ services:
     name: comm-app-backend
     runtime: python
     plan: starter
-    buildCommand: pip install -r app/requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: python start.py
     envVars:
       - key: PYTHON_VERSION
