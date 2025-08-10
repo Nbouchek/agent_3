@@ -8,55 +8,86 @@ import {
   ScrollView,
   Alert,
   SafeAreaView,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import io from "socket.io-client";
-import { StripeProvider } from "@stripe/stripe-react-native";
-
-const BACKEND_URL = "https://comm-app-backend.onrender.com";
+import { API_URL } from "./config"; // Import from config
 
 export default function App() {
+  const [backendStatus, setBackendStatus] = useState("Connecting...");
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
   const [isRegistering, setIsRegistering] = useState(false);
   const [token, setToken] = useState("");
+  const [userId, setUserId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
-  const [socket, setSocket] = useState(null);
+  const [ws, setWs] = useState(null);
   const [recipientId, setRecipientId] = useState("1");
   const [paymentAmount, setPaymentAmount] = useState("1000");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [paymentStatus, setPaymentStatus] = useState("");
+  const [recipientName, setRecipientName] = useState("");
 
-  // Initialize WebSocket connection
+  const nameForMessage = (msg) => {
+    return msg.sender_id === userId
+      ? "You"
+      : recipientName || `User ${msg.sender_id}`;
+  };
+
+  const initialsForName = (name) => {
+    if (!name) return "?";
+    const parts = String(name).trim().split(/\s+/);
+    const first = parts[0]?.[0] || "?";
+    const second = parts[1]?.[0] || "";
+    return (first + second).toUpperCase();
+  };
+
+  const avatarColorForId = (id) => {
+    const colors = [
+      "#6C8CF5",
+      "#F56C6C",
+      "#67C23A",
+      "#E6A23C",
+      "#909399",
+      "#9B59B6",
+      "#16A085",
+    ];
+    if (!id && id !== 0) return colors[0];
+    return colors[id % colors.length];
+  };
+
+  // Check backend health on startup
   useEffect(() => {
-    if (token && !socket) {
-      const newSocket = io(BACKEND_URL, {
-        auth: { token },
-      });
-
-      newSocket.on("connect", () => {
-        console.log("Connected to WebSocket");
-      });
-
-      newSocket.on("message", (message) => {
-        setMessages((prev) => [...prev, message]);
-      });
-
-      setSocket(newSocket);
-    }
-
-    return () => {
-      if (socket) {
-        socket.disconnect();
+    const checkHealth = async () => {
+      try {
+        const response = await fetch(`${API_URL}/health`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.status === "healthy") {
+            setBackendStatus("Connected");
+          } else {
+            setBackendStatus(`Unhealthy: ${data.database}`);
+          }
+        } else {
+          setBackendStatus("Error: Could not connect");
+        }
+      } catch (error) {
+        setBackendStatus("Error: Network request failed");
       }
     };
-  }, [token]);
+
+    checkHealth();
+  }, []);
 
   const handleAuth = async () => {
     try {
       const endpoint = isRegistering ? "/auth/register" : "/auth/token";
-      const method = isRegistering ? "POST" : "POST";
+      const method = "POST";
 
       let body;
       if (isRegistering) {
@@ -71,7 +102,7 @@ export default function App() {
           : "application/x-www-form-urlencoded",
       };
 
-      const response = await fetch(`${BACKEND_URL}${endpoint}`, {
+      const response = await fetch(`${API_URL}${endpoint}`, {
         method,
         headers,
         body,
@@ -85,6 +116,16 @@ export default function App() {
         } else {
           setToken(data.access_token);
           setIsLoggedIn(true);
+          // Fetch current user id
+          const meRes = await fetch(`${API_URL}/users/me`, {
+            headers: { Authorization: `Bearer ${data.access_token}` },
+          });
+          if (meRes.ok) {
+            const me = await meRes.json();
+            setUserId(me.id);
+          } else {
+            Alert.alert("Warning", "Could not fetch user profile.");
+          }
           Alert.alert("Success", "Login successful!");
         }
       } else {
@@ -96,57 +137,195 @@ export default function App() {
     }
   };
 
-  const sendMessage = () => {
-    if (newMessage.trim() && socket) {
-      const message = {
-        content: newMessage,
-        sender_id: 1, // For MVP, hardcoded
-        receiver_id: parseInt(recipientId),
-        timestamp: new Date().toISOString(),
-      };
+  // Connect native WebSocket once we have token and userId
+  useEffect(() => {
+    if (!token || !userId || ws) return;
 
-      socket.emit("message", message);
-      setMessages((prev) => [...prev, message]);
-      setNewMessage("");
+    const wsUrl = `${API_URL.replace("http", "ws")}/chat/ws/${userId}`;
+    const socket = new WebSocket(wsUrl);
+
+    let pingTimer = null;
+
+    socket.onopen = () => {
+      // Keep alive pings
+      pingTimer = setInterval(() => {
+        try {
+          socket.send(JSON.stringify({ type: "ping" }));
+        } catch {}
+      }, 30000);
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.type === "new_message" && payload.message) {
+          setMessages((prev) => [...prev, payload.message]);
+        }
+      } catch {
+        // ignore non-JSON
+      }
+    };
+
+    socket.onclose = () => {
+      if (pingTimer) clearInterval(pingTimer);
+      setWs(null);
+    };
+
+    setWs(socket);
+
+    return () => {
+      if (pingTimer) clearInterval(pingTimer);
+      try {
+        socket.close();
+      } catch {}
+    };
+  }, [token, userId]);
+
+  useEffect(() => {
+    if (!token) return;
+    const idNum = parseInt(recipientId, 10);
+    if (!idNum || idNum <= 0) {
+      setMessages([]);
+      return;
     }
-  };
+    const loadConversation = async () => {
+      try {
+        const res = await fetch(`${API_URL}/chat/messages/${idNum}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setMessages(Array.isArray(data) ? data : []);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    loadConversation();
+  }, [token, recipientId]);
 
-  const createPayment = async () => {
+  const sendMessage = async () => {
+    if (!newMessage.trim()) return;
     try {
-      const response = await fetch(`${BACKEND_URL}/payment/create-intent`, {
+      const response = await fetch(`${API_URL}/chat/send`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          amount: parseInt(paymentAmount),
-          recipient_id: parseInt(recipientId),
+          content: newMessage,
+          receiver_id: parseInt(recipientId, 10),
         }),
       });
 
       if (response.ok) {
+        const sent = await response.json();
+        setMessages((prev) => [...prev, sent]);
+        setNewMessage("");
+      } else {
+        const error = await response.json();
+        Alert.alert("Error", error.detail || "Failed to send message");
+      }
+    } catch (error) {
+      Alert.alert("Error", "Network error: " + error.message);
+    }
+  };
+
+  const createPayment = async () => {
+    try {
+      const amountInt = parseInt(paymentAmount, 10);
+      const recipientInt = parseInt(recipientId, 10);
+      if (!recipientInt || recipientInt <= 0) {
+        Alert.alert("Payment", "Please select a valid recipient id");
+        return;
+      }
+      if (!amountInt || amountInt <= 0) {
+        Alert.alert(
+          "Payment",
+          "Please enter a valid amount in cents (e.g., 500)"
+        );
+        return;
+      }
+
+      setPaymentStatus("Creating payment intent...");
+      console.log("Creating payment intent", { amountInt, recipientInt });
+
+      const response = await fetch(`${API_URL}/payment/create-intent`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          amount: amountInt,
+          recipient_id: recipientInt,
+        }),
+      });
+
+      console.log("Payment response status:", response.status);
+
+      if (response.ok) {
         const data = await response.json();
+        console.log("Payment success:", data);
+        setPaymentStatus(`Created: ${data.payment_intent_id}`);
         Alert.alert(
           "Payment Intent Created",
           `Client Secret: ${data.client_secret}`
         );
       } else {
-        const error = await response.json();
-        Alert.alert("Payment Error", error.detail || "Payment failed");
+        let detail = "Payment failed";
+        try {
+          const err = await response.json();
+          detail = err.detail || JSON.stringify(err);
+        } catch {}
+        console.warn("Payment error:", detail);
+        setPaymentStatus(`Error: ${detail}`);
+        Alert.alert("Payment Error", detail);
       }
     } catch (error) {
+      console.error("Payment exception:", error);
+      setPaymentStatus(`Exception: ${error.message}`);
       Alert.alert("Error", "Payment error: " + error.message);
+    }
+  };
+
+  const searchUsers = async () => {
+    if (!searchQuery || searchQuery.trim().length < 2) {
+      Alert.alert("Search", "Please enter at least 2 characters");
+      return;
+    }
+    try {
+      const res = await fetch(
+        `${API_URL}/users/search?query=${encodeURIComponent(
+          searchQuery.trim()
+        )}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setSearchResults(Array.isArray(data) ? data : []);
+      } else {
+        setSearchResults([]);
+        const e = await res.json();
+        Alert.alert("Search Error", e.detail || "Could not search users");
+      }
+    } catch (e) {
+      Alert.alert("Search Error", e.message);
     }
   };
 
   const logout = () => {
     setIsLoggedIn(false);
     setToken("");
+    setUserId(null);
     setMessages([]);
-    if (socket) {
-      socket.disconnect();
-      setSocket(null);
+    setSearchResults([]);
+    if (ws) {
+      try {
+        ws.close();
+      } catch {}
+      setWs(null);
     }
   };
 
@@ -156,6 +335,7 @@ export default function App() {
         <StatusBar style="auto" />
         <View style={styles.authContainer}>
           <Text style={styles.title}>Communication App</Text>
+          <Text style={styles.statusText}>Backend Status: {backendStatus}</Text>
 
           <TextInput
             style={styles.input}
@@ -213,67 +393,164 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content}>
-        {/* Chat Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Chat</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Recipient ID"
-            value={recipientId}
-            onChangeText={setRecipientId}
-            keyboardType="numeric"
-          />
-          <View style={styles.messageContainer}>
-            {messages.map((msg, index) => (
-              <View key={index} style={styles.message}>
-                <Text style={styles.messageText}>{msg.content}</Text>
-                <Text style={styles.messageTime}>
-                  {new Date(msg.timestamp).toLocaleTimeString()}
-                </Text>
-              </View>
-            ))}
-          </View>
-          <View style={styles.messageInputContainer}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <ScrollView style={styles.content} keyboardShouldPersistTaps="handled">
+          {/* Chat Section */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Chat</Text>
+
+            {/* User search */}
+            <View style={{ marginBottom: 10 }}>
+              <TextInput
+                style={styles.input}
+                placeholder="Search username..."
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoCapitalize="none"
+              />
+              <TouchableOpacity style={styles.button} onPress={searchUsers}>
+                <Text style={styles.buttonText}>Search Users</Text>
+              </TouchableOpacity>
+              {searchResults.length > 0 && (
+                <View style={styles.resultsBox}>
+                  {searchResults.map((u) => (
+                    <TouchableOpacity
+                      key={u.id}
+                      style={styles.resultItem}
+                      onPress={() => {
+                        setRecipientId(String(u.id));
+                        setRecipientName(u.username || "");
+                        Alert.alert(
+                          "Recipient Selected",
+                          `${u.username} (id ${u.id})`
+                        );
+                      }}
+                    >
+                      <Text style={styles.resultText}>
+                        {u.username} (id {u.id})
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+            </View>
+
+            <Text style={{ marginBottom: 6, color: "#666" }}>
+              {`My ID: ${userId ?? "-"}`}
+              {recipientId
+                ? `   •   Recipient: ${
+                    recipientName
+                      ? recipientName + " (id " + recipientId + ")"
+                      : "id " + recipientId
+                  }`
+                : ""}
+            </Text>
+
             <TextInput
-              style={styles.messageInput}
-              placeholder="Type a message..."
-              value={newMessage}
-              onChangeText={setNewMessage}
+              style={styles.input}
+              placeholder="Recipient ID"
+              value={recipientId}
+              onChangeText={(v) => {
+                setRecipientId(v);
+                if (!v) setRecipientName("");
+              }}
+              keyboardType="numeric"
             />
-            <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
-              <Text style={styles.sendButtonText}>Send</Text>
-            </TouchableOpacity>
+
+            <ScrollView style={styles.messagesScroll}>
+              {messages.map((msg, index) => {
+                const isMine = msg.sender_id === userId;
+                const displayName = nameForMessage(msg);
+                const initials = initialsForName(displayName);
+                const color = avatarColorForId(isMine ? userId : msg.sender_id);
+                return (
+                  <View
+                    key={index}
+                    style={[
+                      styles.messageRow,
+                      isMine ? styles.messageRowRight : styles.messageRowLeft,
+                    ]}
+                  >
+                    {!isMine && (
+                      <View style={[styles.avatar, { backgroundColor: color }]}>
+                        <Text style={styles.avatarText}>{initials}</Text>
+                      </View>
+                    )}
+                    <View
+                      style={[
+                        styles.messageBubble,
+                        isMine
+                          ? styles.messageBubbleMy
+                          : styles.messageBubbleOther,
+                      ]}
+                    >
+                      <Text style={styles.messageName}>{displayName}</Text>
+                      <Text style={styles.messageText}>{msg.content}</Text>
+                      <Text style={styles.messageTime}>
+                        {new Date(msg.timestamp).toLocaleTimeString()}
+                      </Text>
+                    </View>
+                    {isMine && (
+                      <View style={[styles.avatar, { backgroundColor: color }]}>
+                        <Text style={styles.avatarText}>{initials}</Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </ScrollView>
+
+            <View style={styles.messageInputContainer}>
+              <TextInput
+                style={styles.messageInput}
+                placeholder="Type a message..."
+                value={newMessage}
+                onChangeText={setNewMessage}
+              />
+              <TouchableOpacity style={styles.sendButton} onPress={sendMessage}>
+                <Text style={styles.sendButtonText}>Send</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        </View>
 
-        {/* Payment Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Send Payment</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Amount (in cents)"
-            value={paymentAmount}
-            onChangeText={setPaymentAmount}
-            keyboardType="numeric"
-          />
-          <TouchableOpacity
-            style={styles.paymentButton}
-            onPress={createPayment}
-          >
-            <Text style={styles.paymentButtonText}>Create Payment Intent</Text>
-          </TouchableOpacity>
-        </View>
+          {/* Payment Section */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Send Payment</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Amount (in cents)"
+              value={paymentAmount}
+              onChangeText={setPaymentAmount}
+              keyboardType="numeric"
+            />
+            <TouchableOpacity
+              style={styles.paymentButton}
+              onPress={createPayment}
+            >
+              <Text style={styles.paymentButtonText}>
+                Create Payment Intent
+              </Text>
+            </TouchableOpacity>
+            {!!paymentStatus && (
+              <Text style={{ marginTop: 8, color: "#555" }}>
+                {paymentStatus}
+              </Text>
+            )}
+          </View>
 
-        {/* Call Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Voice/Video Calls</Text>
-          <Text style={styles.infoText}>
-            WebRTC integration ready. Call functionality will be implemented in
-            next iteration.
-          </Text>
-        </View>
-      </ScrollView>
+          {/* Call Section */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Voice/Video Calls</Text>
+            <Text style={styles.infoText}>
+              WebRTC integration ready. Call functionality will be implemented
+              in next iteration.
+            </Text>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -294,6 +571,12 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 30,
     color: "#333",
+  },
+  statusText: {
+    fontSize: 16,
+    textAlign: "center",
+    marginBottom: 20,
+    color: "#666",
   },
   input: {
     borderWidth: 1,
@@ -368,6 +651,22 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     color: "#333",
   },
+  resultsBox: {
+    backgroundColor: "#fafafa",
+    borderWidth: 1,
+    borderColor: "#eee",
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  resultItem: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  resultText: {
+    fontSize: 14,
+    color: "#333",
+  },
   messageContainer: {
     maxHeight: 200,
     marginBottom: 15,
@@ -390,6 +689,7 @@ const styles = StyleSheet.create({
   messageInputContainer: {
     flexDirection: "row",
     alignItems: "center",
+    marginTop: 4,
   },
   messageInput: {
     flex: 1,
@@ -426,5 +726,64 @@ const styles = StyleSheet.create({
     color: "#666",
     textAlign: "center",
     fontStyle: "italic",
+  },
+  messagesScroll: {
+    height: 260,
+    marginBottom: 10,
+  },
+  messageRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    marginBottom: 8,
+  },
+  messageRowLeft: {
+    justifyContent: "flex-start",
+  },
+  messageRowRight: {
+    justifyContent: "flex-end",
+  },
+  avatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    marginHorizontal: 6,
+  },
+  avatarText: {
+    color: "white",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  messageBubble: {
+    maxWidth: "75%",
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+  },
+  messageBubbleMy: {
+    backgroundColor: "#D1ECFF",
+    alignSelf: "flex-end",
+    borderTopRightRadius: 4,
+  },
+  messageBubbleOther: {
+    backgroundColor: "#F1F1F1",
+    alignSelf: "flex-start",
+    borderTopLeftRadius: 4,
+  },
+  messageName: {
+    fontSize: 11,
+    color: "#555",
+    marginBottom: 2,
+  },
+  messageText: {
+    fontSize: 14,
+    color: "#222",
+  },
+  messageTime: {
+    fontSize: 11,
+    color: "#666",
+    marginTop: 4,
+    alignSelf: "flex-end",
   },
 });

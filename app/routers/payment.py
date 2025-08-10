@@ -49,9 +49,6 @@ async def create_payment_intent(
     Returns:
         PaymentResponse: Payment intent details
     """
-    # Explicitly set the key right before use to avoid import issues
-    stripe.api_key = os.getenv("STRIPE_API_KEY")
-
     # Validate amount
     if request.amount <= 0:
         raise HTTPException(
@@ -240,6 +237,50 @@ async def get_user_balance(current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=f"Stripe error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve balance: {str(e)}")
+
+@router.get("/received", response_model=List[TransactionHistory])
+async def get_received_payments(
+    current_user: User = Depends(get_current_user),
+    limit: int = 50,
+    offset: int = 0
+):
+    """
+    Get payments where the current user is the recipient.
+
+    Args:
+        current_user (User): Current authenticated user
+        limit (int): Max number to return
+        offset (int): Offset for pagination (best-effort)
+
+    Returns:
+        List[TransactionHistory]: List of received payments
+    """
+    try:
+        # Best-effort: Stripe does not support server-side filtering by metadata for all objects.
+        # We fetch a window and filter in-app.
+        intents = stripe.PaymentIntent.list(limit=limit, offset=offset)
+        transactions: List[TransactionHistory] = []
+
+        for payment in intents.data:
+            if payment.metadata.get("recipient_id") == str(current_user.id):
+                transactions.append(TransactionHistory(
+                    id=payment.id,
+                    amount=payment.amount,
+                    currency=payment.currency,
+                    status=payment.status,
+                    created=payment.created,
+                    description=payment.description,
+                    recipient_id=int(payment.metadata.get("recipient_id", 0)) if payment.metadata.get("recipient_id") else None,
+                    sender_id=int(payment.metadata.get("sender_id", 0)) if payment.metadata.get("sender_id") else None,
+                ))
+
+        transactions.sort(key=lambda x: x.created, reverse=True)
+        return transactions
+
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=500, detail=f"Stripe error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve received payments: {str(e)}")
 
 @router.post("/webhook")
 async def stripe_webhook():
