@@ -165,10 +165,15 @@ def debug_info():
     Returns:
         dict: Debug information.
     """
+    stripe_key = os.getenv("STRIPE_API_KEY", "")
+    
     return {
         "database_url_set": bool(os.getenv("DATABASE_URL")),
         "secret_key_set": bool(os.getenv("SECRET_KEY")),
-        "stripe_key_set": bool(os.getenv("STRIPE_API_KEY")),
+        "stripe_key_set": bool(stripe_key),
+        "stripe_key_valid": bool(stripe_key and stripe_key.startswith("sk_")),
+        "stripe_key_prefix": stripe_key[:12] if stripe_key else "none",
+        "stripe_key_length": len(stripe_key) if stripe_key else 0,
         "database_url_length": len(os.getenv("DATABASE_URL", "")) if os.getenv("DATABASE_URL") else 0,
         "environment": os.getenv("ENVIRONMENT", "development"),
         "allowed_origins": get_allowed_origins(),
