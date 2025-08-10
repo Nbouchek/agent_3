@@ -166,7 +166,7 @@ def debug_info():
         dict: Debug information.
     """
     stripe_key = os.getenv("STRIPE_API_KEY", "")
-
+    
     return {
         "database_url_set": bool(os.getenv("DATABASE_URL")),
         "secret_key_set": bool(os.getenv("SECRET_KEY")),
@@ -179,6 +179,46 @@ def debug_info():
         "allowed_origins": get_allowed_origins(),
         "cors_enabled": True
     }
+
+@app.get("/test-stripe")
+def test_stripe_directly():
+    """
+    Test Stripe API directly to debug the payment issue.
+    
+    Returns:
+        dict: Stripe test results.
+    """
+    import stripe
+    
+    stripe_key = os.getenv("STRIPE_API_KEY", "")
+    if not stripe_key or not stripe_key.startswith("sk_"):
+        return {"error": "Invalid Stripe key"}
+    
+    stripe.api_key = stripe_key
+    
+    try:
+        # Test creating a simple payment intent
+        intent = stripe.PaymentIntent.create(
+            amount=100,
+            currency="usd",
+            description="Debug test payment"
+        )
+        
+        return {
+            "success": True,
+            "intent_id": intent.id,
+            "has_client_secret": hasattr(intent, 'client_secret'),
+            "client_secret_prefix": intent.client_secret[:20] if intent.client_secret else "None",
+            "intent_type": type(intent).__name__,
+            "intent_dict_keys": list(intent.keys()) if hasattr(intent, 'keys') else "no_keys"
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
 
 @app.get("/health")
 def health_check():
