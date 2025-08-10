@@ -19,15 +19,17 @@ def ensure_db_schema():
         with engine.begin() as conn:
             # Ensure message table exists (idempotent)
             conn.exec_driver_sql(
-                'CREATE TABLE IF NOT EXISTS "message" (
+                """
+                CREATE TABLE IF NOT EXISTS "message" (
                     id SERIAL PRIMARY KEY,
                     content TEXT,
                     sender_id INTEGER,
                     receiver_id INTEGER,
                     timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
                     is_read BOOLEAN DEFAULT FALSE,
-                    message_type VARCHAR(50) DEFAULT \'text\'
-                )'
+                    message_type VARCHAR(50) DEFAULT 'text'
+                )
+                """
             )
             # Check existing columns on "user" table
             result = conn.exec_driver_sql(
@@ -84,7 +86,7 @@ def ensure_db_schema():
                 )
             if "message_type" not in msg_existing:
                 conn.exec_driver_sql(
-                    'ALTER TABLE "message" ADD COLUMN IF NOT EXISTS message_type VARCHAR(50) DEFAULT \"text\"'
+                    'ALTER TABLE "message" ADD COLUMN IF NOT EXISTS message_type VARCHAR(50) DEFAULT \'text\''
                 )
 
     except Exception as e:
