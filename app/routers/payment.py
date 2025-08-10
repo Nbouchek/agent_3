@@ -11,17 +11,6 @@ from datetime import datetime
 
 router = APIRouter(prefix="/payment", tags=["payment"])
 
-def _require_valid_stripe_key() -> None:
-    """Ensure a valid-looking Stripe secret key is present.
-
-    Treat missing or obviously invalid keys as not configured to satisfy tests.
-    """
-    api_key = os.getenv("STRIPE_API_KEY", "")
-    # Accept only real-looking Stripe keys starting with "sk_"
-    if not api_key or not api_key.startswith("sk_"):
-        raise HTTPException(status_code=500, detail="Stripe API key not configured")
-    stripe.api_key = api_key
-
 class PaymentRequest(BaseModel):
     amount: int  # Amount in cents
     recipient_id: int
@@ -60,11 +49,8 @@ async def create_payment_intent(
     Returns:
         PaymentResponse: Payment intent details
     """
-    # Set Stripe API key for this request
-    api_key = os.getenv("STRIPE_API_KEY", "")
-    if not api_key or not api_key.startswith("sk_"):
-        raise HTTPException(status_code=500, detail="Stripe API key not configured")
-    stripe.api_key = api_key
+    # Explicitly set the key right before use to avoid import issues
+    stripe.api_key = os.getenv("STRIPE_API_KEY")
 
     # Validate amount
     if request.amount <= 0:
@@ -101,16 +87,7 @@ async def create_payment_intent(
                 "payment_type": "p2p"
             },
             receipt_email=current_user.email,
-            # For MVP, we'll use the app's account
-            # In production, integrate Stripe Connect for true P2P
         )
-
-        # Debug: Check if intent and client_secret exist
-        if not intent:
-            raise HTTPException(status_code=500, detail="Payment intent creation returned None")
-        
-        if not hasattr(intent, 'client_secret') or not intent.client_secret:
-            raise HTTPException(status_code=500, detail=f"Payment intent missing client_secret. Intent: {intent}")
 
         return PaymentResponse(
             client_secret=intent.client_secret,
@@ -183,12 +160,6 @@ async def get_transaction_history(
     Returns:
         List[TransactionHistory]: List of transactions
     """
-    # Set Stripe API key for this request
-    api_key = os.getenv("STRIPE_API_KEY", "")
-    if not api_key or not api_key.startswith("sk_"):
-        raise HTTPException(status_code=500, detail="Stripe API key not configured")
-    stripe.api_key = api_key
-
     try:
         # Get payments sent by the user
         sent_payments = stripe.PaymentIntent.list(
@@ -218,8 +189,8 @@ async def get_transaction_history(
 
         return transactions
 
-    except stripe.error.StripeError:
-        raise HTTPException(status_code=500, detail="Stripe API key not configured")
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=500, detail=f"Stripe error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve transactions: {str(e)}")
 
@@ -234,12 +205,6 @@ async def get_user_balance(current_user: User = Depends(get_current_user)):
     Returns:
         dict: User's payment statistics
     """
-    # Set Stripe API key for this request
-    api_key = os.getenv("STRIPE_API_KEY", "")
-    if not api_key or not api_key.startswith("sk_"):
-        raise HTTPException(status_code=500, detail="Stripe API key not configured")
-    stripe.api_key = api_key
-
     try:
         # Get total amount sent
         sent_payments = stripe.PaymentIntent.list(
@@ -271,8 +236,8 @@ async def get_user_balance(current_user: User = Depends(get_current_user)):
             ]
         }
 
-    except stripe.error.StripeError:
-        raise HTTPException(status_code=500, detail="Stripe API key not configured")
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=500, detail=f"Stripe error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve balance: {str(e)}")
 
