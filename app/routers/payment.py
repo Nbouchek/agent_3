@@ -4,10 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlmodel import Session, select
 from app.routers.auth import get_current_user
-from app.models import User
-from app.database import get_db
+from app.models import User, Payment
+from app.database import get_db, get_engine
 from typing import List, Optional
 from datetime import datetime
+import time
+from app.routers.chat import manager as chat_manager
 
 router = APIRouter(prefix="/payment", tags=["payment"])
 
@@ -86,6 +88,45 @@ async def create_payment_intent(
             receipt_email=current_user.email,
         )
 
+        # Realtime notify both sender and recipient (best-effort)
+        payment_event = {
+            "type": "payment_created",
+            "payment": {
+                "id": intent.id,
+                "amount": request.amount,
+                "currency": "usd",
+                "status": intent.status,
+                "sender_id": current_user.id,
+                "recipient_id": request.recipient_id,
+                "created": int(time.time()),
+                "description": request.description or f"Payment to {recipient.username}",
+            },
+        }
+        try:
+            await chat_manager.send_personal_message(payment_event, request.recipient_id)
+            await chat_manager.send_personal_message(payment_event, current_user.id)
+        except Exception:
+            # Non-fatal if recipient is offline
+            pass
+
+        # Persist minimal Payment record
+        try:
+            from sqlmodel import Session as SQLSession
+            with SQLSession(get_engine()) as s:
+                pay = Payment(
+                    sender_id=current_user.id,
+                    recipient_id=request.recipient_id,
+                    amount_cents=request.amount,
+                    currency="USD",
+                    stripe_payment_intent_id=intent.id,
+                    status=intent.status or "requires_action",
+                    description=request.description or f"Payment to {recipient.username}",
+                )
+                s.add(pay)
+                s.commit()
+        except Exception as e:
+            print(f"Payment persist error: {e}")
+
         return PaymentResponse(
             client_secret=intent.client_secret,
             payment_intent_id=intent.id,
@@ -144,10 +185,9 @@ async def confirm_payment(
 async def get_transaction_history(
     current_user: User = Depends(get_current_user),
     limit: int = 50,
-    offset: int = 0
 ):
     """
-    Get transaction history for the current user.
+    Get transaction history for the current user (sent payments).
 
     Args:
         current_user (User): Current authenticated user
@@ -158,34 +198,32 @@ async def get_transaction_history(
         List[TransactionHistory]: List of transactions
     """
     try:
-        # Get payments sent by the user
-        sent_payments = stripe.PaymentIntent.list(
-            limit=limit,
-            offset=offset,
-            metadata={"sender_id": str(current_user.id)}
-        )
+        # Ensure Stripe API key is configured
+        if not getattr(stripe, "api_key", None) or not str(stripe.api_key).startswith("sk_"):
+            raise HTTPException(status_code=500, detail="Stripe API key not configured")
+        # Fetch recent intents and filter by sender_id locally
+        # Stripe's modern API does not support offset; use a simple window.
+        intents = stripe.PaymentIntent.list(limit=min(max(limit, 1), 100))
+        transactions: List[TransactionHistory] = []
 
-        # Get payments received by the user (if using Stripe Connect)
-        # For MVP, we'll only show sent payments
-        transactions = []
+        for payment in intents.data:
+            if payment.metadata.get("sender_id") == str(current_user.id):
+                transactions.append(TransactionHistory(
+                    id=payment.id,
+                    amount=payment.amount,
+                    currency=payment.currency,
+                    status=payment.status,
+                    created=payment.created,
+                    description=payment.description,
+                    recipient_id=int(payment.metadata.get("recipient_id", 0)) if payment.metadata.get("recipient_id") else None,
+                    sender_id=current_user.id
+                ))
 
-        for payment in sent_payments.data:
-            transactions.append(TransactionHistory(
-                id=payment.id,
-                amount=payment.amount,
-                currency=payment.currency,
-                status=payment.status,
-                created=payment.created,
-                description=payment.description,
-                recipient_id=int(payment.metadata.get("recipient_id", 0)) if payment.metadata.get("recipient_id") else None,
-                sender_id=current_user.id
-            ))
-
-        # Sort by creation date (newest first)
         transactions.sort(key=lambda x: x.created, reverse=True)
-
         return transactions
 
+    except HTTPException:
+        raise
     except stripe.error.StripeError as e:
         raise HTTPException(status_code=500, detail=f"Stripe error: {str(e)}")
     except Exception as e:
@@ -242,7 +280,6 @@ async def get_user_balance(current_user: User = Depends(get_current_user)):
 async def get_received_payments(
     current_user: User = Depends(get_current_user),
     limit: int = 50,
-    offset: int = 0
 ):
     """
     Get payments where the current user is the recipient.
@@ -256,9 +293,12 @@ async def get_received_payments(
         List[TransactionHistory]: List of received payments
     """
     try:
+        # Ensure Stripe API key is configured
+        if not getattr(stripe, "api_key", None) or not str(stripe.api_key).startswith("sk_"):
+            raise HTTPException(status_code=500, detail="Stripe API key not configured")
         # Best-effort: Stripe does not support server-side filtering by metadata for all objects.
         # We fetch a window and filter in-app.
-        intents = stripe.PaymentIntent.list(limit=limit, offset=offset)
+        intents = stripe.PaymentIntent.list(limit=min(max(limit, 1), 100))
         transactions: List[TransactionHistory] = []
 
         for payment in intents.data:
@@ -277,22 +317,66 @@ async def get_received_payments(
         transactions.sort(key=lambda x: x.created, reverse=True)
         return transactions
 
+    except HTTPException:
+        raise
     except stripe.error.StripeError as e:
         raise HTTPException(status_code=500, detail=f"Stripe error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve received payments: {str(e)}")
 
+# --- Stripe Webhook ---
 @router.post("/webhook")
-async def stripe_webhook():
+async def stripe_webhook(request: dict):
     """
-    Handle Stripe webhooks for payment events.
-    This endpoint should be configured in Stripe dashboard.
-
-    Returns:
-        dict: Webhook response
+    Minimal webhook to track payment intent status transitions and notify users.
+    Configure this endpoint in Stripe dashboard.
     """
-    # TODO: Implement webhook signature verification
-    # TODO: Handle payment success/failure events
-    # TODO: Update user balances, send notifications, etc.
+    try:
+        event_type = request.get("type")
+        data_object = request.get("data", {}).get("object", {})
+        if not data_object:
+            return {"received": True}
 
-    return {"status": "webhook received"}
+        if event_type in ("payment_intent.succeeded", "payment_intent.payment_failed", "payment_intent.processing", "payment_intent.canceled"):
+            intent_id = data_object.get("id")
+            status_val = data_object.get("status")
+            metadata = data_object.get("metadata", {})
+            sender_id = int(metadata.get("sender_id", 0)) if metadata.get("sender_id") else None
+            recipient_id = int(metadata.get("recipient_id", 0)) if metadata.get("recipient_id") else None
+
+            # Update local Payment record
+            try:
+                from sqlmodel import Session as SQLSession
+                with SQLSession(get_engine()) as s:
+                    pay = s.exec(select(Payment).where(Payment.stripe_payment_intent_id == intent_id)).first()
+                    if pay:
+                        pay.status = status_val
+                        if status_val == "succeeded":
+                            pay.completed_at = datetime.utcnow()
+                        s.add(pay)
+                        s.commit()
+            except Exception as e:
+                print(f"Webhook persist error: {e}")
+
+            # Emit realtime update to both parties
+            evt = {
+                "type": "payment_updated",
+                "payment": {
+                    "id": intent_id,
+                    "status": status_val,
+                    "sender_id": sender_id,
+                    "recipient_id": recipient_id,
+                },
+            }
+            try:
+                if recipient_id:
+                    await chat_manager.send_personal_message(evt, recipient_id)
+                if sender_id:
+                    await chat_manager.send_personal_message(evt, sender_id)
+            except Exception:
+                pass
+
+        return {"received": True}
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return {"received": False}

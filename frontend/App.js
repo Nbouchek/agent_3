@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   StyleSheet,
   Text,
@@ -10,9 +10,11 @@ import {
   SafeAreaView,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { API_URL } from "./config"; // Import from config
+// Removed react-native-webrtc import for web compatibility
 
 export default function App() {
   const [backendStatus, setBackendStatus] = useState("Connecting...");
@@ -32,6 +34,111 @@ export default function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [paymentStatus, setPaymentStatus] = useState("");
   const [recipientName, setRecipientName] = useState("");
+  const [receivedPayments, setReceivedPayments] = useState([]);
+  const [sentPayments, setSentPayments] = useState([]);
+  const [conversations, setConversations] = useState([]);
+  const [usernamesCache, setUsernamesCache] = useState({});
+  const [avatarsCache, setAvatarsCache] = useState({});
+  const messagesRef = useRef(null);
+  const scrollToBottom = () => {
+    try {
+      messagesRef.current?.scrollToEnd({ animated: true });
+    } catch {}
+  };
+  const [inCall, setInCall] = useState(false);
+  const [callingUserId, setCallingUserId] = useState(null);
+  const [acceptedFromId, setAcceptedFromId] = useState(null);
+  const [incomingFromId, setIncomingFromId] = useState(null);
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const pcRef = useRef(null);
+
+  const isWeb = Platform.OS === "web";
+  const iceServers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+  const createPeer = (targetIdOverride = null) => {
+    if (!isWeb) throw new Error("Calls supported on web only in MVP");
+    const pc = new window.RTCPeerConnection(iceServers);
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        const sendTarget = targetIdOverride ?? parseInt(recipientId, 10);
+        ws?.send?.(
+          JSON.stringify({
+            type: "webrtc_ice",
+            target_id: sendTarget,
+            candidate: e.candidate,
+          })
+        );
+      }
+    };
+    pc.ontrack = (event) => {
+      setRemoteStream(event.streams[0]);
+    };
+    pcRef.current = pc;
+    return pc;
+  };
+
+  const getMedia = async () => {
+    if (!isWeb) throw new Error("Calls supported on web only in MVP");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: true,
+    });
+    setLocalStream(stream);
+    return stream;
+  };
+
+  const startCall = async () => {
+    try {
+      if (!isWeb) {
+        Alert.alert("Call", "Calls supported on web only in MVP");
+        return;
+      }
+      const target = parseInt(recipientId, 10);
+      if (!target) {
+        Alert.alert("Call", "Select a valid recipient id");
+        return;
+      }
+      if (target === userId) {
+        Alert.alert("Call", "Cannot call yourself. Pick another user.");
+        return;
+      }
+      if (!ws || ws.readyState !== 1) {
+        Alert.alert("Call", "Connecting… please try again in a moment.");
+        return;
+      }
+      setCallingUserId(target);
+      setInCall(true);
+      // Notify callee immediately before media permission to avoid delays
+      ws?.send?.(JSON.stringify({ type: "call_invite", target_id: target }));
+      const pc = createPeer();
+      const stream = await getMedia();
+      stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      ws?.send?.(
+        JSON.stringify({ type: "webrtc_offer", target_id: target, sdp: offer })
+      );
+    } catch (e) {
+      Alert.alert("Call error", e.message);
+    }
+  };
+
+  const endCall = () => {
+    try {
+      ws?.send?.(
+        JSON.stringify({ type: "call_end", target_id: callingUserId })
+      );
+    } catch {}
+    try {
+      pcRef.current?.close();
+    } catch {}
+    setInCall(false);
+    setCallingUserId(null);
+    setAcceptedFromId(null);
+    setLocalStream(null);
+    setRemoteStream(null);
+  };
 
   const nameForMessage = (msg) => {
     return msg.sender_id === userId
@@ -59,6 +166,73 @@ export default function App() {
     ];
     if (!id && id !== 0) return colors[0];
     return colors[id % colors.length];
+  };
+
+  const getUsername = async (uid) => {
+    if (usernamesCache[uid]) return usernamesCache[uid];
+    // Avoid 400 from /users/{id} when requesting our own profile via this route
+    if (uid === userId) {
+      const name = "You";
+      setUsernamesCache((prev) => ({ ...prev, [uid]: name }));
+      return name;
+    }
+    try {
+      const res = await fetch(`${API_URL}/users/${uid}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const name = data.username || `User ${uid}`;
+        setUsernamesCache((prev) => ({ ...prev, [uid]: name }));
+        if (data.avatar_url)
+          setAvatarsCache((prev) => ({ ...prev, [uid]: data.avatar_url }));
+        return name;
+      }
+    } catch {}
+    return `User ${uid}`;
+  };
+
+  const Avatar = ({ uid, name, size = 34 }) => {
+    const url = avatarsCache[uid];
+    if (url) {
+      return (
+        <Image
+          source={{ uri: url }}
+          style={{
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            marginHorizontal: 6,
+          }}
+          resizeMode="cover"
+        />
+      );
+    }
+    return (
+      <View
+        style={[
+          styles.avatar,
+          {
+            backgroundColor: avatarColorForId(uid),
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+          },
+        ]}
+      >
+        <Text style={styles.avatarText}>{initialsForName(name)}</Text>
+      </View>
+    );
+  };
+
+  const enrichConversations = async (items) => {
+    const enriched = await Promise.all(
+      items.map(async (c) => ({
+        ...c,
+        username: await getUsername(c.user_id),
+      }))
+    );
+    setConversations(enriched);
   };
 
   // Check backend health on startup
@@ -141,7 +315,13 @@ export default function App() {
   useEffect(() => {
     if (!token || !userId || ws) return;
 
-    const wsUrl = `${API_URL.replace("http", "ws")}/chat/ws/${userId}`;
+    const wsBase = API_URL.replace("http://", "ws://").replace(
+      "https://",
+      "wss://"
+    );
+    const wsUrl = `${wsBase}/chat/ws/${userId}?token=${encodeURIComponent(
+      token
+    )}`;
     const socket = new WebSocket(wsUrl);
 
     let pingTimer = null;
@@ -158,12 +338,132 @@ export default function App() {
     socket.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
+        // Chat messages
         if (payload.type === "new_message" && payload.message) {
-          setMessages((prev) => [...prev, payload.message]);
+          setMessages((prev) => {
+            const next = [...prev, payload.message];
+            requestAnimationFrame(scrollToBottom);
+            return next;
+          });
         }
-      } catch {
-        // ignore non-JSON
-      }
+        // Payments
+        if (payload.type === "payment_created" && payload.payment) {
+          const p = payload.payment;
+          if (p.recipient_id === userId) {
+            setReceivedPayments((prev) => [
+              {
+                id: p.id,
+                amount: p.amount,
+                currency: p.currency,
+                status: p.status,
+                created: p.created,
+                description: p.description,
+                recipient_id: p.recipient_id,
+                sender_id: p.sender_id,
+              },
+              ...prev,
+            ]);
+          }
+          if (p.sender_id === userId) {
+            setPaymentStatus(`Created: ${p.id}`);
+            setSentPayments((prev) => [
+              {
+                id: p.id,
+                amount: p.amount,
+                currency: p.currency,
+                status: p.status,
+                created: p.created,
+                description: p.description,
+                recipient_id: p.recipient_id,
+                sender_id: p.sender_id,
+              },
+              ...prev,
+            ]);
+          }
+        }
+        if (payload.type === "payment_updated" && payload.payment) {
+          const p = payload.payment;
+          setReceivedPayments((prev) =>
+            prev.map((it) =>
+              it.id === p.id ? { ...it, status: p.status } : it
+            )
+          );
+          if (p.sender_id === userId) setPaymentStatus(`Status: ${p.status}`);
+        }
+        // Call signaling
+        if (payload.type === "call_invite") {
+          const fromId = payload.from;
+          console.log("Incoming call from", fromId);
+          setCallingUserId(fromId);
+          setIncomingFromId(fromId);
+          if (isWeb) {
+            Alert.alert("Incoming call", `User ${fromId} is calling you`, [
+              {
+                text: "Decline",
+                style: "destructive",
+                onPress: () => {
+                  try {
+                    socket.send(
+                      JSON.stringify({ type: "call_end", target_id: fromId })
+                    );
+                  } catch {}
+                  setIncomingFromId(null);
+                },
+              },
+              {
+                text: "Accept",
+                onPress: () => {
+                  setAcceptedFromId(fromId);
+                  setInCall(true);
+                  setRecipientId(String(fromId));
+                  setIncomingFromId(null);
+                },
+              },
+            ]);
+          } else {
+            setAcceptedFromId(fromId);
+            setInCall(true);
+            setRecipientId(String(fromId));
+            setIncomingFromId(null);
+          }
+        }
+        if (payload.type === "webrtc_offer" && payload.sdp) {
+          (async () => {
+            if (acceptedFromId !== null && acceptedFromId !== payload.from)
+              return;
+            console.log("Offer from", payload.from);
+            const pc = createPeer(payload.from);
+            const stream = await getMedia();
+            stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+            await pc.setRemoteDescription(payload.sdp);
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.send(
+              JSON.stringify({
+                type: "webrtc_answer",
+                target_id: payload.from,
+                sdp: answer,
+              })
+            );
+          })();
+        }
+        if (payload.type === "webrtc_answer" && payload.sdp) {
+          (async () => {
+            console.log("Answer from", payload.from);
+            await pcRef.current?.setRemoteDescription(payload.sdp);
+          })();
+        }
+        if (payload.type === "webrtc_ice" && payload.candidate) {
+          (async () => {
+            try {
+              await pcRef.current?.addIceCandidate(payload.candidate);
+            } catch {}
+          })();
+        }
+        if (payload.type === "call_end") {
+          endCall();
+        }
+      } catch {}
     };
 
     socket.onclose = () => {
@@ -181,6 +481,90 @@ export default function App() {
     };
   }, [token, userId]);
 
+  // Extend WS handler for call events
+  useEffect(() => {
+    if (!ws) return;
+    const socket = ws;
+    const onMsg = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.type === "call_invite") {
+          const fromId = payload.from;
+          setCallingUserId(fromId);
+          setIncomingFromId(fromId);
+          if (isWeb) {
+            Alert.alert("Incoming call", `User ${fromId} is calling you`, [
+              {
+                text: "Decline",
+                style: "destructive",
+                onPress: () => {
+                  try {
+                    socket.send(
+                      JSON.stringify({ type: "call_end", target_id: fromId })
+                    );
+                  } catch {}
+                  setIncomingFromId(null);
+                },
+              },
+              {
+                text: "Accept",
+                onPress: () => {
+                  setAcceptedFromId(fromId);
+                  setInCall(true);
+                  setRecipientId(String(fromId));
+                  setIncomingFromId(null);
+                },
+              },
+            ]);
+          } else {
+            setAcceptedFromId(fromId);
+            setInCall(true);
+            setRecipientId(String(fromId));
+            setIncomingFromId(null);
+          }
+        }
+        if (payload.type === "webrtc_offer" && payload.sdp) {
+          (async () => {
+            if (acceptedFromId !== null && acceptedFromId !== payload.from)
+              return;
+            const pc = createPeer(payload.from);
+            const stream = await getMedia();
+            stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+            await pc.setRemoteDescription(payload.sdp);
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.send(
+              JSON.stringify({
+                type: "webrtc_answer",
+                target_id: payload.from,
+                sdp: answer,
+              })
+            );
+          })();
+        }
+        if (payload.type === "webrtc_answer" && payload.sdp) {
+          (async () => {
+            await pcRef.current?.setRemoteDescription(payload.sdp);
+          })();
+        }
+        if (payload.type === "webrtc_ice" && payload.candidate) {
+          (async () => {
+            try {
+              await pcRef.current?.addIceCandidate(payload.candidate);
+            } catch {}
+          })();
+        }
+        if (payload.type === "call_end") {
+          endCall();
+        }
+      } catch {}
+    };
+    socket.addEventListener?.("message", onMsg);
+    return () => {
+      socket.removeEventListener?.("message", onMsg);
+    };
+  }, [ws]);
+
   useEffect(() => {
     if (!token) return;
     const idNum = parseInt(recipientId, 10);
@@ -196,6 +580,7 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           setMessages(Array.isArray(data) ? data : []);
+          setTimeout(scrollToBottom, 0);
         }
       } catch {
         // ignore
@@ -221,7 +606,11 @@ export default function App() {
 
       if (response.ok) {
         const sent = await response.json();
-        setMessages((prev) => [...prev, sent]);
+        setMessages((prev) => {
+          const next = [...prev, sent];
+          requestAnimationFrame(scrollToBottom);
+          return next;
+        });
         setNewMessage("");
       } else {
         const error = await response.json();
@@ -315,6 +704,83 @@ export default function App() {
     }
   };
 
+  const loadReceivedPayments = async () => {
+    try {
+      const res = await fetch(`${API_URL}/payment/received`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setReceivedPayments(Array.isArray(data) ? data : []);
+      } else {
+        const e = await res.json().catch(() => ({}));
+        Alert.alert("Payments", e.detail || "Could not load received payments");
+      }
+    } catch (e) {
+      Alert.alert("Payments", e.message);
+    }
+  };
+
+  const loadSentPayments = async () => {
+    try {
+      const res = await fetch(`${API_URL}/payment/transactions`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSentPayments(Array.isArray(data) ? data : []);
+      }
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const fetchConversations = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_URL}/chat/conversations`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const items = Array.isArray(data) ? data : [];
+        enrichConversations(items);
+      }
+    } catch {}
+  };
+
+  // Load received payments after login
+  useEffect(() => {
+    if (token) loadReceivedPayments();
+  }, [token]);
+
+  // Poll as fallback
+  useEffect(() => {
+    if (!token) return;
+    const id = setInterval(() => {
+      loadReceivedPayments();
+      loadSentPayments();
+    }, 10000);
+    return () => clearInterval(id);
+  }, [token]);
+
+  useEffect(() => {
+    if (token) fetchConversations();
+  }, [token]);
+
+  const openConversation = async (otherId) => {
+    setRecipientId(String(otherId));
+    await fetch(`${API_URL}/chat/mark-read/${otherId}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }).catch(() => {});
+    fetchConversations();
+  };
+
   const logout = () => {
     setIsLoggedIn(false);
     setToken("");
@@ -398,6 +864,49 @@ export default function App() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <ScrollView style={styles.content} keyboardShouldPersistTaps="handled">
+          {/* Conversations Section */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Conversations</Text>
+            {conversations.length === 0 ? (
+              <Text style={{ color: "#666" }}>No conversations yet.</Text>
+            ) : (
+              <View style={styles.convList}>
+                {conversations.map((c) => (
+                  <TouchableOpacity
+                    key={c.user_id}
+                    style={styles.convItem}
+                    onPress={() => openConversation(c.user_id)}
+                  >
+                    <View
+                      style={{ flexDirection: "row", alignItems: "center" }}
+                    >
+                      <Avatar
+                        uid={c.user_id}
+                        name={c.username || `User ${c.user_id}`}
+                        size={34}
+                      />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.convTitle}>
+                          {c.username || `User ${c.user_id}`}
+                        </Text>
+                        <Text style={styles.convMeta} numberOfLines={1}>
+                          {c.last_message}
+                        </Text>
+                      </View>
+                      {!!c.unread_count && (
+                        <View style={styles.unreadBadge}>
+                          <Text style={styles.unreadText}>
+                            {c.unread_count}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </View>
+
           {/* Chat Section */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Chat</Text>
@@ -460,7 +969,11 @@ export default function App() {
               keyboardType="numeric"
             />
 
-            <ScrollView style={styles.messagesScroll}>
+            <ScrollView
+              style={styles.messagesScroll}
+              ref={messagesRef}
+              onContentSizeChange={scrollToBottom}
+            >
               {messages.map((msg, index) => {
                 const isMine = msg.sender_id === userId;
                 const displayName = nameForMessage(msg);
@@ -475,9 +988,11 @@ export default function App() {
                     ]}
                   >
                     {!isMine && (
-                      <View style={[styles.avatar, { backgroundColor: color }]}>
-                        <Text style={styles.avatarText}>{initials}</Text>
-                      </View>
+                      <Avatar
+                        uid={msg.sender_id}
+                        name={displayName}
+                        size={34}
+                      />
                     )}
                     <View
                       style={[
@@ -494,9 +1009,7 @@ export default function App() {
                       </Text>
                     </View>
                     {isMine && (
-                      <View style={[styles.avatar, { backgroundColor: color }]}>
-                        <Text style={styles.avatarText}>{initials}</Text>
-                      </View>
+                      <Avatar uid={userId} name={displayName} size={34} />
                     )}
                   </View>
                 );
@@ -539,15 +1052,120 @@ export default function App() {
                 {paymentStatus}
               </Text>
             )}
+
+            <View style={{ marginTop: 16 }}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <Text style={styles.sectionTitle}>Received Payments</Text>
+                <TouchableOpacity
+                  style={[
+                    styles.button,
+                    {
+                      paddingVertical: 8,
+                      paddingHorizontal: 12,
+                      marginBottom: 0,
+                    },
+                  ]}
+                  onPress={loadReceivedPayments}
+                >
+                  <Text style={styles.buttonText}>Refresh</Text>
+                </TouchableOpacity>
+              </View>
+              {receivedPayments.length === 0 ? (
+                <Text style={{ color: "#666" }}>No received payments yet.</Text>
+              ) : (
+                <View style={styles.paymentList}>
+                  {receivedPayments.map((p) => (
+                    <View key={p.id} style={styles.paymentItem}>
+                      <Text style={styles.paymentTitle}>{p.id}</Text>
+                      <Text style={styles.paymentMeta}>{`Amount: $${(
+                        p.amount / 100
+                      ).toFixed(2)}  •  From: ${
+                        p.sender_id ?? "-"
+                      }  •  Status: ${p.status}`}</Text>
+                      <Text style={styles.paymentMeta}>
+                        {new Date(p.created * 1000).toLocaleString()}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
+            <View style={{ marginTop: 20 }}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <Text style={styles.sectionTitle}>Sent Payments</Text>
+                <TouchableOpacity
+                  style={[
+                    styles.button,
+                    {
+                      paddingVertical: 8,
+                      paddingHorizontal: 12,
+                      marginBottom: 0,
+                    },
+                  ]}
+                  onPress={loadSentPayments}
+                >
+                  <Text style={styles.buttonText}>Refresh</Text>
+                </TouchableOpacity>
+              </View>
+              {sentPayments.length === 0 ? (
+                <Text style={{ color: "#666" }}>No sent payments yet.</Text>
+              ) : (
+                <View style={styles.paymentList}>
+                  {sentPayments.map((p) => (
+                    <View key={p.id} style={styles.paymentItem}>
+                      <Text style={styles.paymentTitle}>{p.id}</Text>
+                      <Text style={styles.paymentMeta}>{`Amount: $${(
+                        p.amount / 100
+                      ).toFixed(2)}  •  To: ${
+                        p.recipient_id ?? "-"
+                      }  •  Status: ${p.status}`}</Text>
+                      <Text style={styles.paymentMeta}>
+                        {new Date(p.created * 1000).toLocaleString()}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
           </View>
 
           {/* Call Section */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Voice/Video Calls</Text>
-            <Text style={styles.infoText}>
-              WebRTC integration ready. Call functionality will be implemented
-              in next iteration.
-            </Text>
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              {!inCall ? (
+                <TouchableOpacity style={styles.button} onPress={startCall}>
+                  <Text style={styles.buttonText}>
+                    {isWeb ? "Start Call" : "Start Call (web only)"}
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.button, { backgroundColor: "#FF3B30" }]}
+                  onPress={endCall}
+                >
+                  <Text style={styles.buttonText}>End Call</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            {/* For web preview, we won’t render native Video; show simple state */}
+            <View style={{ marginTop: 10 }}>
+              <Text style={styles.infoText}>
+                {inCall ? "In Call" : "Not in call"}
+              </Text>
+            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -721,6 +1339,27 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "bold",
   },
+  paymentList: {
+    marginTop: 8,
+  },
+  paymentItem: {
+    backgroundColor: "#fafafa",
+    borderWidth: 1,
+    borderColor: "#eee",
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+  },
+  paymentTitle: {
+    fontSize: 13,
+    color: "#333",
+    fontWeight: "600",
+    marginBottom: 2,
+  },
+  paymentMeta: {
+    fontSize: 12,
+    color: "#666",
+  },
   infoText: {
     fontSize: 14,
     color: "#666",
@@ -785,5 +1424,40 @@ const styles = StyleSheet.create({
     color: "#666",
     marginTop: 4,
     alignSelf: "flex-end",
+  },
+  convList: {
+    marginTop: 6,
+  },
+  convItem: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#eee",
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+    position: "relative",
+  },
+  convTitle: {
+    fontWeight: "600",
+    color: "#333",
+    marginBottom: 4,
+  },
+  convMeta: {
+    color: "#666",
+    fontSize: 12,
+  },
+  unreadBadge: {
+    position: "absolute",
+    right: 10,
+    top: 10,
+    backgroundColor: "#FF3B30",
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  unreadText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
   },
 });
