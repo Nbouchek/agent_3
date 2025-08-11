@@ -187,6 +187,11 @@ export default function App() {
         if (data.avatar_url)
           setAvatarsCache((prev) => ({ ...prev, [uid]: data.avatar_url }));
         return name;
+      } else if (res.status === 400) {
+        // Backend forbids fetching self via /users/{id}
+        const name = uid === userId ? "You" : `User ${uid}`;
+        setUsernamesCache((prev) => ({ ...prev, [uid]: name }));
+        return name;
       }
     } catch {}
     return `User ${uid}`;
